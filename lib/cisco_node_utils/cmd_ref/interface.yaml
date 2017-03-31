@@ -44,7 +44,7 @@ default:
   multiple:
   set_context: ~
   set_value:   "default interface <name>"
-  get_command: "show running interface <name>"
+  get_command: "show running interface"
   get_value:   '/(.*)/'
 
 description:
