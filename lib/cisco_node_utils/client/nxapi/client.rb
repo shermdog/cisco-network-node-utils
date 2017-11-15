@@ -19,6 +19,7 @@
 require_relative '../client'
 require 'json'
 require 'net/http'
+require 'curb'
 
 include Cisco::Logger
 
@@ -44,6 +45,8 @@ class Cisco::Client::NXAPI < Cisco::Client
           platform:     :nexus,
           **kwargs)
     # rubocop:enable Style/HashSyntax
+    @http = Curl::Easy.new()
+    #@http.verbose = true
     # Default: connect to unix domain socket on localhost, if available
     if @host.nil?
       unless File.socket?(NXAPI_UDS)
@@ -54,19 +57,23 @@ class Cisco::Client::NXAPI < Cisco::Client
       # which supports connection to local unix domain sockets. We need this
       # in order to run natively under NX-OS but it's not needed for off-box
       # unit testing where the base Net::HTTP will meet our needs.
-      require 'net_http_unix'
-      @http = NetX::HTTPUnix.new('unix://' + NXAPI_UDS)
+      #@http = Excon.new('unix:///', :socket => NXAPI_UDS, :persistent => true, :debug_request => false, :debug_response => false)
+      @http.set(:UNIX_SOCKET_PATH, NXAPI_UDS)
+      @http.url = 'http://localhost/ins_local'
+      #@http = Excon.new('http://qqbwl9jeg3v9ilz.delivery.puppetlabs.net', :persistent => true, :debug_request => true, :debug_response => true)
       @cookie = kwargs[:cookie]
     else
       # Remote connection. This is primarily expected
       # when running e.g. from a Unix server as part of Minitest.
-      @http = Net::HTTP.new(@host)
+      @http = Excon.new('http://' + @host, :persistent => true)
+      @http = Excon.new('http://192.168.122.54', :persistent => true)
     end
     # The default read time out is 60 seconds, which may be too short for
     # scaled configuration to apply. Change it to 300 seconds, which is
     # also used as the default config by firefox.
-    @http.read_timeout = 300
-    @address = @http.address
+    #@http.read_timeout = 300
+    #@http.request(:read_timeout => 300)
+    #@address = @http.address
   end
 
   def self.validate_args(**kwargs)
@@ -168,9 +175,10 @@ class Cisco::Client::NXAPI < Cisco::Client
   # the default value of 300 to accomodate commands that are known to
   # require more time to complete.
   def read_timeout_check(request)
-    return unless request.body[/install all|install force-all/]
+    return unless request[:body][/install all|install force-all/]
     debug("Increasing http read_timeout to 1000 for 'install all' command")
-    @http.read_timeout = 1000
+    #@http.read_timeout = 1000
+    @http.request(:read_timeout => 1000)
   end
 
   # Sends a request to the NX API and returns the body of the request or
@@ -205,15 +213,19 @@ class Cisco::Client::NXAPI < Cisco::Client
     request = build_http_request(type, command)
 
     # send the request and get the response
-    debug("Sending HTTP request to NX-API at #{@http.address}:\n" \
-          "#{request.to_hash}\n#{request.body}")
-    read_timeout_check(request)
+    #address = 'localhost' if @http.connection[:scheme] == 'unix'
+    address = 'localhost'
+    # debug("Sending HTTP request to NX-API at #{address}:\n" \
+    #       "#{request.to_hash}\n#{request[:body]}")
+    debug("Sending HTTP request to NX-API at #{address}:\n" \
+          "#{request.to_s}\n")
+    #read_timeout_check(request)
     tries = 2
     begin
       # Explicitly use http to avoid EOFError
       # http://stackoverflow.com/a/23080693
-      @http.use_ssl = false
-      response = @http.request(request)
+      #@http.use_ssl = false
+      response = @http.http_post(request)
     rescue Errno::ECONNREFUSED, Errno::ECONNRESET
       emsg = 'Connection refused or reset. Is the NX-API feature enabled?'
       raise Cisco::ConnectionRefused, emsg
@@ -245,16 +257,19 @@ class Cisco::Client::NXAPI < Cisco::Client
   private :req
 
   def build_http_request(type, command_string)
+    @http.headers['Host'] = "localhost"
+
     if @username.nil? || @password.nil?
       cookie = @cookie.nil? ? 'admin:local' : @cookie
-      request = Net::HTTP::Post.new(NXAPI_UDS_URI_PATH)
-      request['Cookie'] = "nxapi_auth=#{cookie}"
+      @http.headers['Cookie'] = "nxapi_auth=#{cookie}"
     else
       request = Net::HTTP::Post.new(NXAPI_REMOTE_URI_PATH)
       request.basic_auth("#{@username}", "#{@password}")
+      request[:user] = 'admin'
+      request[:password] = 'admin'
     end
-    request.content_type = 'application/json'
-    request.body = {
+
+    {
       'ins_api' => {
         'version'       => NXAPI_VERSION,
         'type'          => "#{type}",
@@ -264,12 +279,11 @@ class Cisco::Client::NXAPI < Cisco::Client
         'output_format' => 'json',
       }
     }.to_json
-    request
   end
   private :build_http_request
 
   def handle_http_response(response)
-    debug("HTTP Response: #{response.message}\n#{response.body}")
+    debug("HTTP Response: #{@http.response_code}\n#{@http.body_str}")
     case response
     when Net::HTTPUnauthorized
       emsg = 'HTTP 401 Unauthorized. Are your NX-API credentials correct?'
@@ -282,7 +296,7 @@ class Cisco::Client::NXAPI < Cisco::Client
   private :handle_http_response
 
   def parse_response(response)
-    body = JSON.parse(response.body)
+    body = JSON.parse(@http.body_str)
 
     # In case of an error the JSON may not be complete, so we need to
     # proceed carefully, as blindly doing body["ins_api"]["outputs"]["output"]
