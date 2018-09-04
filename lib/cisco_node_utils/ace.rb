@@ -96,6 +96,30 @@ module Cisco
       regexp.match(str)
     end
 
+    def icmp_get
+      str = config_get('acl', 'ace', @get_args)
+      return nil if str.nil?
+
+      remark = Regexp.new('(?<seqno>\d+) remark (?<remark>.*)').match(str)
+      return remark unless remark.nil?
+
+      # rubocop:disable Metrics/LineLength
+      regexp = Regexp.new('(?<seqno>\d+) (?<action>\S+)'\
+                 ' *(?<proto>\d+|\S+)'\
+                 ' *(?<src_addr>any|host \S+|[:\.0-9a-fA-F]+ [:\.0-9a-fA-F]+|[:\.0-9a-fA-F]+\/\d+|addrgroup \S+)'\
+                 ' *(?<dst_addr>any|host \S+|[:\.0-9a-fA-F]+ [:\.0-9a-fA-F]+|[:\.0-9a-fA-F]+\/\d+|addrgroup \S+)'\
+                 ' *(?<precedence>precedence \S+)?'\
+                 ' *(?<icmp_type>\S+)?'\
+                 ' *(?<dscp>dscp \S+)?'\
+                 ' *(?<time_range>time-range \S+)?'\
+                 ' *(?<packet_length>packet-length (range \d+ \d+|(lt|eq|gt|neq) \d+))?'\
+                 ' *(?<ttl>ttl \d+)?'\
+                 ' *(?<redirect>redirect \S+)?'\
+                 ' *(?<log>log)?')
+      # rubocop:enable Metrics/LineLength
+      regexp.match(str)
+    end
+
     # common ace setter. Put the values you need in a hash and pass it in.
     # attrs = {:action=>'permit', :proto=>'tcp', :src =>'host 1.1.1.1'}
     def ace_set(attrs)
@@ -337,6 +361,17 @@ module Cisco
 
     def log=(log)
       @set_args[:log] = log.to_s == 'true' ? 'log' : ''
+    end
+
+    def icmp_message
+      match = ace_get
+      return nil unless match[:proto] == 'icmp'
+      icmp_get[:icmp_type]
+      # return nil if match.nil? || !match.names.include?('dst_addr')
+      # addr = match[:dst_addr]
+      # # Normalize addr. Some platforms zero_pad ipv6 addrs.
+      # addr.gsub!(/^0*/, '').gsub!(/:0*/, ':') if valid_ipv6?(addr)
+      # addr
     end
   end
 end
